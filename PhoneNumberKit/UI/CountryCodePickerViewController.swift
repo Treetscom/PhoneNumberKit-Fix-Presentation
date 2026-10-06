@@ -28,6 +28,19 @@ public class CountryCodePickerViewController: UITableViewController {
     var hasCurrent = true
     var hasCommon = true
 
+    var topSectionCount: Int {
+        guard !isFiltering else { return 0 }
+        return (hasCurrent ? 1 : 0) + (hasCommon ? 1 : 0)
+    }
+
+    var letterSectionTitles: [String] {
+        countries.dropFirst(topSectionCount).map { group in
+            group.first?.name.first
+                .map(String.init)?
+                .folding(options: .diacriticInsensitive, locale: nil) ?? ""
+        }
+    }
+
     lazy var allCountries = utility
         .allCountries()
         .compactMap({ Country(for: $0, with: self.utility) })
@@ -55,6 +68,8 @@ public class CountryCodePickerViewController: UITableViewController {
         // Note we should maybe use the user's current carrier's country code?
         if hasCurrent, let current = Country(for: PhoneNumberUtility.defaultRegionCode(), with: utility) {
             result.append([current])
+        } else {
+            hasCurrent = false
         }
         hasCommon = hasCommon && !popular.isEmpty
         if hasCommon {
@@ -64,6 +79,10 @@ public class CountryCodePickerViewController: UITableViewController {
     }()
 
     var filteredCountries: [Country] = []
+
+    var searchText = ""
+
+    var sectionIndexView: SectionIndexView?
 
     public weak var delegate: CountryCodePickerDelegate?
 
@@ -117,6 +136,66 @@ public class CountryCodePickerViewController: UITableViewController {
         if let separator = options.separatorColor {
             tableView.separatorColor = separator
         }
+
+        if let rowHeight = options.rowHeight {
+            tableView.rowHeight = rowHeight + (options.rowSpacing ?? 0)
+        }
+
+        if options.rowSpacing != nil {
+            tableView.separatorStyle = .none
+        }
+
+        if options.sectionHeaderHeight != nil || options.topSectionHeaderHeight != nil {
+            tableView.estimatedSectionHeaderHeight = 0
+        }
+
+        if options.sectionFooterHeight != nil {
+            tableView.estimatedSectionFooterHeight = 0
+        }
+
+        if let sectionIndexColor = options.sectionIndexColor {
+            tableView.sectionIndexColor = sectionIndexColor
+        }
+
+        if let sectionIndexFont = options.sectionIndexFont {
+            installSectionIndexView(font: sectionIndexFont)
+        }
+    }
+
+    func installSectionIndexView(font: UIFont) {
+        let indexView = SectionIndexView(
+            titles: letterSectionTitles,
+            options: options,
+            font: font,
+            scrollPanGesture: tableView.panGestureRecognizer
+        )
+        indexView.translatesAutoresizingMaskIntoConstraints = false
+        indexView.onSelectIndex = { [weak self] index in
+            guard let self = self else { return }
+            let indexPath = IndexPath(row: 0, section: self.topSectionCount + index)
+            self.tableView.scrollToRow(at: indexPath, at: .top, animated: false)
+        }
+        tableView.addSubview(indexView)
+        NSLayoutConstraint.activate([
+            indexView.trailingAnchor.constraint(equalTo: tableView.frameLayoutGuide.trailingAnchor),
+            indexView.centerYAnchor.constraint(equalTo: tableView.frameLayoutGuide.centerYAnchor),
+            indexView.widthAnchor.constraint(equalToConstant: SectionIndexView.width),
+            indexView.heightAnchor.constraint(lessThanOrEqualTo: tableView.frameLayoutGuide.heightAnchor)
+        ])
+        sectionIndexView = indexView
+    }
+
+    /// Filters the list the same way the built-in search bar does, for callers that supply their own search field.
+    public func filterCountries(by text: String) {
+        searchText = text
+        let query = text.lowercased()
+        filteredCountries = allCountries.filter { country in
+            country.name.lowercased().contains(query) ||
+                country.code.lowercased().contains(query) ||
+                country.prefix.lowercased().contains(query)
+        }
+        sectionIndexView?.isHidden = isFiltering
+        tableView.reloadData()
     }
 
     override public func viewWillAppear(_ animated: Bool) {
@@ -157,6 +236,15 @@ public class CountryCodePickerViewController: UITableViewController {
 
         if let cellBackgroundColor = options.cellBackgroundColor {
             cell.backgroundColor = cellBackgroundColor
+        }
+
+        if let cellLayoutMargins = options.cellLayoutMargins {
+            cell.preservesSuperviewLayoutMargins = false
+            cell.directionalLayoutMargins = cellLayoutMargins
+        }
+
+        if let rowSpacing = options.rowSpacing, let cell = cell as? Cell {
+            cell.setRowSpacing(rowSpacing, color: options.backgroundColor)
         }
 
         cell.textLabel?.text = country.prefix + " " + country.flag
@@ -201,10 +289,49 @@ public class CountryCodePickerViewController: UITableViewController {
         return countries[section].first?.name.first.map(String.init)
     }
 
-    override public func sectionIndexTitles(for tableView: UITableView) -> [String]? {
-        guard !isFiltering else {
+    override public func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
+        guard let title = self.tableView(tableView, titleForHeaderInSection: section) else {
             return nil
         }
+        let isTopSection = section < topSectionCount
+        let font = isTopSection ? options.topSectionHeaderFont : options.sectionHeaderFont
+        let color = isTopSection ? options.topSectionHeaderColor : options.sectionHeaderColor
+        guard font != nil || color != nil || options.sectionHeaderLayoutMargins != nil else {
+            return nil
+        }
+        return SectionHeaderView(title: title, font: font, color: color, margins: options.sectionHeaderLayoutMargins)
+    }
+
+    override public func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
+        let isTopSection = section < topSectionCount
+        guard let textHeight = isTopSection ? options.topSectionHeaderHeight : options.sectionHeaderHeight else {
+            return UITableView.automaticDimension
+        }
+        guard self.tableView(tableView, titleForHeaderInSection: section) != nil else {
+            return .leastNormalMagnitude
+        }
+        let margins = options.sectionHeaderLayoutMargins
+        return textHeight + (margins?.top ?? 0) + (margins?.bottom ?? 0)
+    }
+
+    override public func tableView(_ tableView: UITableView, viewForFooterInSection section: Int) -> UIView? {
+        options.sectionFooterHeight == nil ? nil : UIView()
+    }
+
+    override public func tableView(_ tableView: UITableView, heightForFooterInSection section: Int) -> CGFloat {
+        guard let sectionFooterHeight = options.sectionFooterHeight else {
+            return UITableView.automaticDimension
+        }
+        // A grouped table swaps a zero height, or a footer with no view, for its default spacing.
+        return max(sectionFooterHeight, .leastNormalMagnitude)
+    }
+
+    override public func sectionIndexTitles(for tableView: UITableView) -> [String]? {
+        guard !isFiltering, sectionIndexView == nil else {
+            return nil
+        }
+        // Read first: it loads `countries`, which settles `hasCurrent` and `hasCommon`.
+        let letterTitles = letterSectionTitles
         var titles: [String] = []
         if hasCurrent {
             titles.append("•") // NOTE: SFSymbols are not supported otherwise we would use 􀋑
@@ -212,11 +339,7 @@ public class CountryCodePickerViewController: UITableViewController {
         if hasCommon {
             titles.append("★") // This is a classic unicode star
         }
-        return titles + countries.suffix(countries.count - titles.count).map { group in
-            group.first?.name.first
-                .map(String.init)?
-                .folding(options: .diacriticInsensitive, locale: nil) ?? ""
-        }
+        return titles + letterTitles
     }
 
     override public func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
@@ -228,21 +351,11 @@ public class CountryCodePickerViewController: UITableViewController {
 
 extension CountryCodePickerViewController: UISearchResultsUpdating {
     var isFiltering: Bool {
-        searchController.isActive && !isSearchBarEmpty
-    }
-
-    var isSearchBarEmpty: Bool {
-        searchController.searchBar.text?.isEmpty ?? true
+        !searchText.isEmpty
     }
 
     public func updateSearchResults(for searchController: UISearchController) {
-        let searchText = searchController.searchBar.text ?? ""
-        filteredCountries = allCountries.filter { country in
-            country.name.lowercased().contains(searchText.lowercased()) ||
-                country.code.lowercased().contains(searchText.lowercased()) ||
-                country.prefix.lowercased().contains(searchText.lowercased())
-        }
-        tableView.reloadData()
+        filterCountries(by: searchController.searchBar.text ?? "")
     }
 }
 
@@ -282,6 +395,10 @@ public extension CountryCodePickerViewController {
     class Cell: UITableViewCell {
         static let reuseIdentifier = "Cell"
 
+        private let rowSpacingView = UIView()
+
+        private lazy var rowSpacingHeightConstraint = rowSpacingView.heightAnchor.constraint(equalToConstant: 0)
+
         override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
             super.init(style: .value2, reuseIdentifier: Self.reuseIdentifier)
         }
@@ -289,6 +406,262 @@ public extension CountryCodePickerViewController {
         @available(*, unavailable)
         required init?(coder: NSCoder) {
             fatalError("init(coder:) has not been implemented")
+        }
+
+        override public func layoutSubviews() {
+            super.layoutSubviews()
+            if rowSpacingView.superview != nil, subviews.last !== rowSpacingView {
+                bringSubviewToFront(rowSpacingView)
+            }
+        }
+
+        func setRowSpacing(_ rowSpacing: CGFloat, color: UIColor?) {
+            if rowSpacingView.superview == nil {
+                rowSpacingView.translatesAutoresizingMaskIntoConstraints = false
+                addSubview(rowSpacingView)
+                NSLayoutConstraint.activate([
+                    rowSpacingView.leadingAnchor.constraint(equalTo: leadingAnchor),
+                    rowSpacingView.trailingAnchor.constraint(equalTo: trailingAnchor),
+                    rowSpacingView.bottomAnchor.constraint(equalTo: bottomAnchor),
+                    rowSpacingHeightConstraint
+                ])
+            }
+            rowSpacingView.backgroundColor = color
+            rowSpacingHeightConstraint.constant = rowSpacing
+        }
+    }
+}
+
+// MARK: - Section Index View
+extension CountryCodePickerViewController {
+    /// Replaces the system section index so its font can be styled, and shows a bubble with the touched letter.
+    final class SectionIndexView: UIView {
+        static let width: CGFloat = 40
+
+        private static let rowHeight: CGFloat = 20
+
+        private var rowHeight: CGFloat {
+            stackView.bounds.height / CGFloat(max(titles.count, 1))
+        }
+
+        var onSelectIndex: ((Int) -> Void)?
+
+        private let titles: [String]
+
+        private let font: UIFont
+
+        private let stackView = UIStackView()
+
+        private let bubbleView: SectionIndexBubbleView
+
+        private var selectedIndex: Int?
+
+        private let selectionFeedback = UISelectionFeedbackGenerator()
+
+        private weak var scrollPanGesture: UIPanGestureRecognizer?
+
+        init(titles: [String], options: CountryCodePickerOptions, font: UIFont, scrollPanGesture: UIPanGestureRecognizer) {
+            self.titles = titles
+            self.font = font
+            self.bubbleView = SectionIndexBubbleView(options: options)
+            self.scrollPanGesture = scrollPanGesture
+            super.init(frame: .zero)
+            layer.zPosition = 1
+
+            let dragGesture = UILongPressGestureRecognizer(target: self, action: #selector(handleDrag))
+            dragGesture.minimumPressDuration = 0
+            dragGesture.delegate = self
+            addGestureRecognizer(dragGesture)
+
+            stackView.axis = .vertical
+            stackView.distribution = .fillEqually
+            stackView.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(stackView)
+            addTitleLabels(color: options.sectionIndexColor)
+
+            bubbleView.alpha = 0
+            addSubview(bubbleView)
+
+            NSLayoutConstraint.activate([
+                stackView.topAnchor.constraint(equalTo: topAnchor),
+                stackView.bottomAnchor.constraint(equalTo: bottomAnchor),
+                stackView.centerXAnchor.constraint(equalTo: centerXAnchor)
+            ])
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        @objc private func handleDrag(_ gesture: UILongPressGestureRecognizer) {
+            switch gesture.state {
+            case .began:
+                selectionFeedback.prepare()
+                selectTitle(atY: gesture.location(in: stackView).y)
+            case .changed:
+                selectTitle(atY: gesture.location(in: stackView).y)
+            default:
+                endSelection()
+            }
+        }
+
+        private func addTitleLabels(color: UIColor?) {
+            titles.forEach { title in
+                let label = UILabel()
+                label.text = title
+                label.font = font
+                label.textColor = color
+                label.textAlignment = .center
+                label.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+                let heightConstraint = label.heightAnchor.constraint(equalToConstant: Self.rowHeight)
+                heightConstraint.priority = .defaultHigh
+                heightConstraint.isActive = true
+                stackView.addArrangedSubview(label)
+            }
+        }
+
+        private func selectTitle(atY locationY: CGFloat) {
+            guard !titles.isEmpty else { return }
+            let index = min(max(Int(locationY / rowHeight), 0), titles.count - 1)
+            guard index != selectedIndex else { return }
+            selectedIndex = index
+            selectionFeedback.selectionChanged()
+
+            bubbleView.title = titles[index]
+            let bubbleSize = SectionIndexBubbleView.size
+            let centerY = stackView.frame.minY + (CGFloat(index) + 0.5) * rowHeight
+            let bubbleOriginX = bounds.midX - font.pointSize / 2 - bubbleSize.width
+            bubbleView.frame = CGRect(x: bubbleOriginX, y: centerY - bubbleSize.height / 2, width: bubbleSize.width, height: bubbleSize.height)
+            bubbleView.alpha = 1
+            onSelectIndex?(index)
+        }
+
+        private func endSelection() {
+            selectedIndex = nil
+            UIView.animate(withDuration: 0.2) {
+                self.bubbleView.alpha = 0
+            }
+        }
+    }
+}
+
+// MARK: - UIGestureRecognizerDelegate
+extension CountryCodePickerViewController.SectionIndexView: UIGestureRecognizerDelegate {
+    // Keeps a drag on the index from scrolling the table instead.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        otherGestureRecognizer == scrollPanGesture
+    }
+}
+
+// MARK: - Section Header View
+extension CountryCodePickerViewController {
+    // A plain view on purpose: UIKit writes the section title into a UITableViewHeaderFooterView's own label too.
+    final class SectionHeaderView: UIView {
+        init(title: String, font: UIFont?, color: UIColor?, margins: NSDirectionalEdgeInsets?) {
+            super.init(frame: .zero)
+            let titleLabel = UILabel()
+            titleLabel.text = title
+            titleLabel.font = font
+            titleLabel.textColor = color
+            titleLabel.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(titleLabel)
+
+            let margins = margins ?? .zero
+            NSLayoutConstraint.activate([
+                titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: margins.leading),
+                titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -margins.trailing),
+                titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: margins.top),
+                titleLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -margins.bottom)
+            ])
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+    }
+}
+
+// MARK: - Section Index Bubble View
+extension CountryCodePickerViewController {
+    final class SectionIndexBubbleView: UIView {
+        static let size = CGSize(width: 32, height: 29)
+
+        private static let bodyWidth: CGFloat = 28
+
+        private static let pointerHeight: CGFloat = 9
+
+        private static let cornerRadius: CGFloat = 7
+
+        var title: String? {
+            get { titleLabel.text }
+            set { titleLabel.text = newValue }
+        }
+
+        private let options: CountryCodePickerOptions
+
+        private let shapeLayer = CAShapeLayer()
+
+        private let titleLabel = UILabel()
+
+        init(options: CountryCodePickerOptions) {
+            self.options = options
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false
+
+            let path = Self.bubblePath()
+            shapeLayer.path = path.cgPath
+            layer.addSublayer(shapeLayer)
+            layer.shadowPath = path.cgPath
+            layer.shadowOpacity = 0.1
+            layer.shadowOffset = CGSize(width: 0, height: 3)
+            layer.shadowRadius = 3
+
+            titleLabel.font = options.sectionHeaderFont
+            titleLabel.textColor = options.sectionIndexBubbleTextColor
+            titleLabel.textAlignment = .center
+            titleLabel.frame = CGRect(x: 0, y: 0, width: Self.bodyWidth, height: Self.size.height)
+            addSubview(titleLabel)
+            updateColors()
+            if #available(iOS 17.0, *) {
+                registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (bubbleView: SectionIndexBubbleView, _: UITraitCollection) in
+                    bubbleView.updateColors()
+                }
+            }
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        // CGColors don't follow light/dark changes on their own.
+        override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+            super.traitCollectionDidChange(previousTraitCollection)
+            if #unavailable(iOS 17.0) {
+                updateColors()
+            }
+        }
+
+        private func updateColors() {
+            shapeLayer.fillColor = options.sectionIndexBubbleBackgroundColor?.cgColor
+            layer.shadowColor = options.sectionIndexBubbleShadowColor?.cgColor
+        }
+
+        private static func bubblePath() -> UIBezierPath {
+            let bodyRect = CGRect(x: 0, y: 0, width: bodyWidth, height: size.height)
+            let path = UIBezierPath(roundedRect: bodyRect, cornerRadius: cornerRadius)
+            let pointerTop = CGPoint(x: bodyWidth, y: (size.height - pointerHeight) / 2)
+            let pointerTip = CGPoint(x: size.width, y: size.height / 2)
+            let pointerBottom = CGPoint(x: bodyWidth, y: (size.height + pointerHeight) / 2)
+            let pointer = UIBezierPath()
+            pointer.move(to: pointerTop)
+            pointer.addLine(to: pointerTip)
+            pointer.addLine(to: pointerBottom)
+            pointer.close()
+            path.append(pointer)
+            return path
         }
     }
 }
