@@ -21,7 +21,7 @@ import UIKit
 /// - Parameter cellBackgroundColorSelection: UIColor for the cell selectedBackgroundView
 /// - Parameter cellLayoutMargins: Insets for the cell content
 /// - Parameter rowHeight: Fixed height for every cell, excluding `rowSpacing`
-/// - Parameter rowSpacing: Gap below every cell, in the background color, replacing the separator line
+/// - Parameter rowSpacing: Gap below every cell, in the background color, replacing the separator line; added to `rowHeight` only when that is set
 /// - Parameter sectionHeaderFont: UIFont for the alphabetical section headers and the section index bubble letter
 /// - Parameter sectionHeaderColor: UIColor for the alphabetical section headers
 /// - Parameter topSectionHeaderFont: UIFont for the "Current" and "Common" section headers
@@ -33,7 +33,7 @@ import UIKit
 /// - Parameter sectionIndexColor: UIColor for the section index titles
 /// - Parameter sectionIndexFont: UIFont for the section index titles; setting it swaps the system index for a letters-only one with a bubble
 /// - Parameter sectionIndexBubbleTextColor: UIColor for the letter in the section index bubble
-/// - Parameter sectionIndexBubbleBackgroundColor: UIColor for the section index bubble
+/// - Parameter sectionIndexBubbleBackgroundColor: UIColor for the section index bubble; without it the bubble has no fill
 /// - Parameter sectionIndexBubbleShadowColor: UIColor for the section index bubble shadow
 public struct CountryCodePickerOptions {
     public init() { }

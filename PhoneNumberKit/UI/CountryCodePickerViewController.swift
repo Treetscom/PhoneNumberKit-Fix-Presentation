@@ -145,6 +145,10 @@ public class CountryCodePickerViewController: UITableViewController {
             tableView.separatorStyle = .none
         }
 
+        if options.sectionHeaderHeight != nil || options.topSectionHeaderHeight != nil {
+            tableView.estimatedSectionHeaderHeight = 0
+        }
+
         if options.sectionFooterHeight != nil {
             tableView.estimatedSectionFooterHeight = 0
         }
@@ -175,7 +179,8 @@ public class CountryCodePickerViewController: UITableViewController {
         NSLayoutConstraint.activate([
             indexView.trailingAnchor.constraint(equalTo: tableView.frameLayoutGuide.trailingAnchor),
             indexView.centerYAnchor.constraint(equalTo: tableView.frameLayoutGuide.centerYAnchor),
-            indexView.widthAnchor.constraint(equalToConstant: SectionIndexView.width)
+            indexView.widthAnchor.constraint(equalToConstant: SectionIndexView.width),
+            indexView.heightAnchor.constraint(lessThanOrEqualTo: tableView.frameLayoutGuide.heightAnchor)
         ])
         sectionIndexView = indexView
     }
@@ -325,6 +330,8 @@ public class CountryCodePickerViewController: UITableViewController {
         guard !isFiltering, sectionIndexView == nil else {
             return nil
         }
+        // Read first: it loads `countries`, which settles `hasCurrent` and `hasCommon`.
+        let letterTitles = letterSectionTitles
         var titles: [String] = []
         if hasCurrent {
             titles.append("•") // NOTE: SFSymbols are not supported otherwise we would use 􀋑
@@ -332,7 +339,7 @@ public class CountryCodePickerViewController: UITableViewController {
         if hasCommon {
             titles.append("★") // This is a classic unicode star
         }
-        return titles + letterSectionTitles
+        return titles + letterTitles
     }
 
     override public func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
@@ -403,7 +410,9 @@ public extension CountryCodePickerViewController {
 
         override public func layoutSubviews() {
             super.layoutSubviews()
-            bringSubviewToFront(rowSpacingView)
+            if rowSpacingView.superview != nil, subviews.last !== rowSpacingView {
+                bringSubviewToFront(rowSpacingView)
+            }
         }
 
         func setRowSpacing(_ rowSpacing: CGFloat, color: UIColor?) {
@@ -431,6 +440,10 @@ extension CountryCodePickerViewController {
 
         private static let rowHeight: CGFloat = 20
 
+        private var rowHeight: CGFloat {
+            stackView.bounds.height / CGFloat(max(titles.count, 1))
+        }
+
         var onSelectIndex: ((Int) -> Void)?
 
         private let titles: [String]
@@ -442,6 +455,8 @@ extension CountryCodePickerViewController {
         private let bubbleView: SectionIndexBubbleView
 
         private var selectedIndex: Int?
+
+        private let selectionFeedback = UISelectionFeedbackGenerator()
 
         private weak var scrollPanGesture: UIPanGestureRecognizer?
 
@@ -459,6 +474,7 @@ extension CountryCodePickerViewController {
             addGestureRecognizer(dragGesture)
 
             stackView.axis = .vertical
+            stackView.distribution = .fillEqually
             stackView.translatesAutoresizingMaskIntoConstraints = false
             addSubview(stackView)
             addTitleLabels(color: options.sectionIndexColor)
@@ -480,7 +496,10 @@ extension CountryCodePickerViewController {
 
         @objc private func handleDrag(_ gesture: UILongPressGestureRecognizer) {
             switch gesture.state {
-            case .began, .changed:
+            case .began:
+                selectionFeedback.prepare()
+                selectTitle(atY: gesture.location(in: stackView).y)
+            case .changed:
                 selectTitle(atY: gesture.location(in: stackView).y)
             default:
                 endSelection()
@@ -494,20 +513,24 @@ extension CountryCodePickerViewController {
                 label.font = font
                 label.textColor = color
                 label.textAlignment = .center
-                label.heightAnchor.constraint(equalToConstant: Self.rowHeight).isActive = true
+                label.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+                let heightConstraint = label.heightAnchor.constraint(equalToConstant: Self.rowHeight)
+                heightConstraint.priority = .defaultHigh
+                heightConstraint.isActive = true
                 stackView.addArrangedSubview(label)
             }
         }
 
         private func selectTitle(atY locationY: CGFloat) {
             guard !titles.isEmpty else { return }
-            let index = min(max(Int(locationY / Self.rowHeight), 0), titles.count - 1)
+            let index = min(max(Int(locationY / rowHeight), 0), titles.count - 1)
             guard index != selectedIndex else { return }
             selectedIndex = index
+            selectionFeedback.selectionChanged()
 
             bubbleView.title = titles[index]
             let bubbleSize = SectionIndexBubbleView.size
-            let centerY = stackView.frame.minY + (CGFloat(index) + 0.5) * Self.rowHeight
+            let centerY = stackView.frame.minY + (CGFloat(index) + 0.5) * rowHeight
             let bubbleOriginX = bounds.midX - font.pointSize / 2 - bubbleSize.width
             bubbleView.frame = CGRect(x: bubbleOriginX, y: centerY - bubbleSize.height / 2, width: bubbleSize.width, height: bubbleSize.height)
             bubbleView.alpha = 1
@@ -601,6 +624,11 @@ extension CountryCodePickerViewController {
             titleLabel.frame = CGRect(x: 0, y: 0, width: Self.bodyWidth, height: Self.size.height)
             addSubview(titleLabel)
             updateColors()
+            if #available(iOS 17.0, *) {
+                registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (bubbleView: SectionIndexBubbleView, _: UITraitCollection) in
+                    bubbleView.updateColors()
+                }
+            }
         }
 
         @available(*, unavailable)
@@ -611,7 +639,9 @@ extension CountryCodePickerViewController {
         // CGColors don't follow light/dark changes on their own.
         override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
             super.traitCollectionDidChange(previousTraitCollection)
-            updateColors()
+            if #unavailable(iOS 17.0) {
+                updateColors()
+            }
         }
 
         private func updateColors() {
